@@ -57,12 +57,6 @@ jobs:
         need_update=false
         latest_db_time=0
         
-        iso_to_timestamp() {
-          local iso_time="$1"
-          local formatted_time=$(echo "$iso_time" | sed 's/T/ /' | sed 's/Z$//')
-          date -d "$formatted_time UTC" +%s 2>/dev/null || echo "0"
-        }
-        
         rfc_to_timestamp() {
           local rfc_time="$1"
           date -d "$rfc_time" +%s 2>/dev/null || echo "0"
@@ -73,37 +67,13 @@ jobs:
           last_tag=$(git tag -l --sort=-version:refname | head -1)
           echo "Last release tag: $last_tag"
           
-          release_info=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/repos/${{ github.repository }}/releases/tags/$last_tag" 2>/dev/null)
-          
-          if [ $? -eq 0 ] && echo "$release_info" | grep -q "created_at"; then
-            release_date=$(echo "$release_info" | grep '"created_at"' | cut -d'"' -f4)
-            echo "Release date from API: $release_date"
-            
-            last_release_time=$(iso_to_timestamp "$release_date")
-            echo "Converted release timestamp: $last_release_time"
-            
-            if [ "$last_release_time" -eq 0 ]; then
-              echo "ISO time conversion failed, trying alternative method..."
-              last_release_time=$(date -d "${release_date}" +%s 2>/dev/null || echo "0")
-              echo "Alternative conversion result: $last_release_time"
-            fi
-            
-            if [ "$last_release_time" -eq 0 ]; then
-              echo "API time conversion failed, using tag time as fallback"
-              tag_date=$(git log -1 --format=%ai "$last_tag" 2>/dev/null)
-              if [ -n "$tag_date" ]; then
-                last_release_time=$(date -d "$tag_date" +%s 2>/dev/null || echo "0")
-                echo "Tag date: $tag_date (timestamp: $last_release_time)"
-              fi
-            fi
+          tag_date=$(git log -1 --format=%ai "$last_tag" 2>/dev/null)
+          if [ -n "$tag_date" ]; then
+            last_release_time=$(date -d "$tag_date" +%s 2>/dev/null || echo "0")
+            echo "Tag date: $tag_date"
+            echo "Tag timestamp: $last_release_time"
           else
-            echo "Could not get release info from API, using tag time"
-            tag_date=$(git log -1 --format=%ai "$last_tag" 2>/dev/null)
-            if [ -n "$tag_date" ]; then
-              last_release_time=$(date -d "$tag_date" +%s 2>/dev/null || echo "0")
-              echo "Tag date: $tag_date (timestamp: $last_release_time)"
-            fi
+            echo "Could not get tag date"
           fi
         else
           echo "No previous release found"
@@ -139,7 +109,7 @@ jobs:
               echo "Warning: Could not convert timestamp for $db"
               continue
             fi
-            
+
             if [ "$db_timestamp" -gt "$latest_db_time" ]; then
               latest_db_time="$db_timestamp"
             fi
@@ -168,7 +138,7 @@ jobs:
         if [ "$last_release_time" -gt 0 ]; then
           echo "Last release time (human): $(date -d @$last_release_time)"
         fi
-        
+
         echo "need_update=$need_update" >> $GITHUB_OUTPUT
         echo "current_date=$(date +"%Y.%m.%d")" >> $GITHUB_OUTPUT
         echo "latest_timestamp=$latest_db_time" >> $GITHUB_OUTPUT
@@ -178,8 +148,7 @@ jobs:
       run: |
         echo "Updates detected, downloading databases..."
         echo "Latest database timestamp: ${{ steps.check_updates.outputs.latest_timestamp }}"
-        
-        # 下载所有数据库
+
         curl -O -J -L -u "${{ secrets.MAXMIND_ACCOUNT_ID }}:${{ secrets.MAXMIND_LICENSE_KEY }}" \
           'https://download.maxmind.com/geoip/databases/GeoLite2-ASN/download?suffix=tar.gz'
         curl -O -J -L -u "${{ secrets.MAXMIND_ACCOUNT_ID }}:${{ secrets.MAXMIND_LICENSE_KEY }}" \
@@ -187,7 +156,6 @@ jobs:
         curl -O -J -L -u "${{ secrets.MAXMIND_ACCOUNT_ID }}:${{ secrets.MAXMIND_LICENSE_KEY }}" \
           'https://download.maxmind.com/geoip/databases/GeoLite2-Country/download?suffix=tar.gz'
         
-        # 解压文件
         for file in *.tar.gz; do
           if [ -f "$file" ]; then
             echo "Extracting $file"
