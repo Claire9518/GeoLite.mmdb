@@ -33,24 +33,109 @@ on:
   repository_dispatch:
   workflow_dispatch:
   schedule:
-    - cron: 0 1 */3 * *
+    # 每天UTC时间凌晨2点检查一次
+    - cron: '0 2 * * *'
+
+permissions:
+  contents: write
+  actions: write
 
 jobs:
-  run:
+  check-and-update:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
-    - name: Download GeoLite.mmdb
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Check for updates
+      id: check_updates
       run: |
-        wget -nv -O- "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-ASN&license_key=${{ secrets.LICENSE_KEY }}&suffix=tar.gz" | tar zxv
-        wget -nv -O- "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key=${{ secrets.LICENSE_KEY }}&suffix=tar.gz" | tar zxv
-        wget -nv -O- "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-Country&license_key=${{ secrets.LICENSE_KEY }}&suffix=tar.gz" | tar zxv
+        # 检查每个数据库的最后修改时间
+        databases=("GeoLite2-ASN" "GeoLite2-City" "GeoLite2-Country")
+        need_update=false
+        
+        # 获取上次更新的时间戳（从最新的release tag获取）
+        last_release=$(git tag -l --sort=-version:refname | head -1)
+        if [ -n "$last_release" ]; then
+          last_update_date="$last_release"
+          echo "Last release: $last_update_date"
+        else
+          last_update_date="1970.01.01"
+          echo "No previous release found"
+        fi
+        
+        echo "Checking for database updates..."
+        
+        for db in "${databases[@]}"; do
+          echo "Checking $db..."
+          
+          # 获取数据库的最后修改时间
+          response=$(curl -s -I -L -u "${{ secrets.MAXMIND_ACCOUNT_ID }}:${{ secrets.MAXMIND_LICENSE_KEY }}" \
+            "https://download.maxmind.com/geoip/databases/${db}/download?suffix=tar.gz")
+          
+          if [ $? -ne 0 ]; then
+            echo "Failed to check $db"
+            continue
+          fi
+          
+          # 提取last-modified时间
+          last_modified=$(echo "$response" | grep -i "last-modified:" | cut -d' ' -f2- | tr -d '\r\n')
+          echo "$db last modified: $last_modified"
+          
+          # 提取content-disposition中的文件名（包含日期）
+          content_disposition=$(echo "$response" | grep -i "content-disposition:" | tr -d '\r\n')
+          echo "$db content-disposition: $content_disposition"
+          
+          # 简单的日期比较：检查是否是今天的数据
+          today=$(date +"%Y%m%d")
+          if echo "$content_disposition" | grep -q "$today"; then
+            echo "$db has updates for today"
+            need_update=true
+            break
+          fi
+        done
+        
+        echo "need_update=$need_update" >> $GITHUB_OUTPUT
+        echo "current_date=$(date +"%Y.%m.%d")" >> $GITHUB_OUTPUT
+
+    - name: Download GeoLite databases
+      if: steps.check_updates.outputs.need_update == 'true'
+      run: |
+        echo "Updates detected, downloading databases..."
+        
+        # 下载所有数据库
+        curl -O -J -L -u "${{ secrets.MAXMIND_ACCOUNT_ID }}:${{ secrets.MAXMIND_LICENSE_KEY }}" \
+          'https://download.maxmind.com/geoip/databases/GeoLite2-ASN/download?suffix=tar.gz'
+        curl -O -J -L -u "${{ secrets.MAXMIND_ACCOUNT_ID }}:${{ secrets.MAXMIND_LICENSE_KEY }}" \
+          'https://download.maxmind.com/geoip/databases/GeoLite2-City/download?suffix=tar.gz'
+        curl -O -J -L -u "${{ secrets.MAXMIND_ACCOUNT_ID }}:${{ secrets.MAXMIND_LICENSE_KEY }}" \
+          'https://download.maxmind.com/geoip/databases/GeoLite2-Country/download?suffix=tar.gz'
+        
+        # 解压文件
+        for file in *.tar.gz; do
+          if [ -f "$file" ]; then
+            echo "Extracting $file"
+            tar zxvf "$file"
+          fi
+        done
+        
+        # 准备上传目录
         mkdir -p upload
-        cp -v GeoLite*/*.mmdb upload
-        echo "TAG_NAME=$(date +"%Y.%m.%d")" >> $GITHUB_ENV
+        if ls GeoLite*/*.mmdb 1> /dev/null 2>&1; then
+          cp -v GeoLite*/*.mmdb upload/
+          echo "Files prepared for upload:"
+          ls -la upload/
+        else
+          echo "No .mmdb files found!"
+          exit 1
+        fi
 
     - name: Push to "download" branch
+      if: steps.check_updates.outputs.need_update == 'true'
       run: |
         cd upload
         git init
@@ -58,29 +143,48 @@ jobs:
         git config user.email "${{ github.actor }}@users.noreply.github.com"
         git checkout -b download
         git add .
-        git commit -m "${{ env.TAG_NAME }}"
+        git commit -m "Update GeoLite databases - ${{ steps.check_updates.outputs.current_date }}"
         git remote add origin "https://${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
         git push -f origin download
 
     - name: Upload to Releases
+      if: steps.check_updates.outputs.need_update == 'true'
       uses: softprops/action-gh-release@v2
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        tag_name: ${{ env.TAG_NAME }}
-        body: ${{ env.TAG_NAME }}
+        tag_name: ${{ steps.check_updates.outputs.current_date }}
+        name: "GeoLite2 Databases - ${{ steps.check_updates.outputs.current_date }}"
+        body: |
+          📍 **GeoLite2 Database Update**
+          
+          Updated on: ${{ steps.check_updates.outputs.current_date }}
+          
+          This release contains the latest GeoLite2 databases:
+          - GeoLite2-ASN.mmdb
+          - GeoLite2-City.mmdb  
+          - GeoLite2-Country.mmdb
+          
+          Databases are automatically updated when MaxMind releases new versions.
         files: upload/*.mmdb
 
     - name: Remove old Releases
+      if: steps.check_updates.outputs.need_update == 'true'
       uses: dev-drprasad/delete-older-releases@master
       with:
-        keep_latest: 2
+        keep_latest: 3
         delete_tags: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Delete workflow runs
+      if: steps.check_updates.outputs.need_update == 'true'
       uses: Mattraks/delete-workflow-runs@main
       with:
-        retain_days: 0
-        keep_minimum_runs: 2
+        retain_days: 1
+        keep_minimum_runs: 3
+
+    - name: No updates needed
+      if: steps.check_updates.outputs.need_update != 'true'
+      run: |
+        echo "✅ No updates needed. Databases are up to date."
