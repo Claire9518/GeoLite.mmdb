@@ -53,31 +53,56 @@ jobs:
     - name: Check for updates
       id: check_updates
       run: |
-        # 检查每个数据库的最后修改时间
         databases=("GeoLite2-ASN" "GeoLite2-City" "GeoLite2-Country")
         need_update=false
         latest_db_time=0
         
-        # 获取上次release的创建时间（更精确的时间戳）
+        iso_to_timestamp() {
+          local iso_time="$1"
+          local formatted_time=$(echo "$iso_time" | sed 's/T/ /' | sed 's/Z$//')
+          date -d "$formatted_time UTC" +%s 2>/dev/null || echo "0"
+        }
+        
+        rfc_to_timestamp() {
+          local rfc_time="$1"
+          date -d "$rfc_time" +%s 2>/dev/null || echo "0"
+        }
+        
         last_release_time=0
         if git tag -l --sort=-version:refname | head -1 > /dev/null 2>&1; then
           last_tag=$(git tag -l --sort=-version:refname | head -1)
           echo "Last release tag: $last_tag"
           
-          # 尝试从GitHub API获取release的精确时间
           release_info=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             "https://api.github.com/repos/${{ github.repository }}/releases/tags/$last_tag" 2>/dev/null)
           
           if [ $? -eq 0 ] && echo "$release_info" | grep -q "created_at"; then
             release_date=$(echo "$release_info" | grep '"created_at"' | cut -d'"' -f4)
-            last_release_time=$(date -d "$release_date" +%s 2>/dev/null || echo "0")
-            echo "Last release time: $release_date (timestamp: $last_release_time)"
+            echo "Release date from API: $release_date"
+            
+            last_release_time=$(iso_to_timestamp "$release_date")
+            echo "Converted release timestamp: $last_release_time"
+            
+            if [ "$last_release_time" -eq 0 ]; then
+              echo "ISO time conversion failed, trying alternative method..."
+              last_release_time=$(date -d "${release_date}" +%s 2>/dev/null || echo "0")
+              echo "Alternative conversion result: $last_release_time"
+            fi
+            
+            if [ "$last_release_time" -eq 0 ]; then
+              echo "API time conversion failed, using tag time as fallback"
+              tag_date=$(git log -1 --format=%ai "$last_tag" 2>/dev/null)
+              if [ -n "$tag_date" ]; then
+                last_release_time=$(date -d "$tag_date" +%s 2>/dev/null || echo "0")
+                echo "Tag date: $tag_date (timestamp: $last_release_time)"
+              fi
+            fi
           else
-            # 如果API调用失败，使用tag创建时间作为后备
+            echo "Could not get release info from API, using tag time"
             tag_date=$(git log -1 --format=%ai "$last_tag" 2>/dev/null)
             if [ -n "$tag_date" ]; then
               last_release_time=$(date -d "$tag_date" +%s 2>/dev/null || echo "0")
-              echo "Using tag date: $tag_date (timestamp: $last_release_time)"
+              echo "Tag date: $tag_date (timestamp: $last_release_time)"
             fi
           fi
         else
@@ -87,10 +112,14 @@ jobs:
         echo "Checking for database updates..."
         echo "Last release timestamp: $last_release_time"
         
+        if [ "$last_release_time" -eq 0 ]; then
+          last_release_time=$(($(date +%s) - 86400))
+          echo "Using 24 hours ago as reference: $last_release_time"
+        fi
+        
         for db in "${databases[@]}"; do
           echo "Checking $db..."
           
-          # 获取数据库的HEAD信息
           response=$(curl -s -I -L -u "${{ secrets.MAXMIND_ACCOUNT_ID }}:${{ secrets.MAXMIND_LICENSE_KEY }}" \
             "https://download.maxmind.com/geoip/databases/${db}/download?suffix=tar.gz")
           
@@ -99,23 +128,25 @@ jobs:
             continue
           fi
           
-          # 提取last-modified时间
           last_modified=$(echo "$response" | grep -i "^last-modified:" | cut -d' ' -f2- | tr -d '\r\n' | sed 's/^ *//')
           echo "$db last modified: $last_modified"
           
           if [ -n "$last_modified" ]; then
-            # 将last-modified时间转换为时间戳
-            db_timestamp=$(date -d "$last_modified" +%s 2>/dev/null || echo "0")
+            db_timestamp=$(rfc_to_timestamp "$last_modified")
             echo "$db timestamp: $db_timestamp"
             
-            # 记录最新的数据库时间
+            if [ "$db_timestamp" -eq 0 ]; then
+              echo "Warning: Could not convert timestamp for $db"
+              continue
+            fi
+            
             if [ "$db_timestamp" -gt "$latest_db_time" ]; then
               latest_db_time="$db_timestamp"
             fi
             
-            # 比较时间戳，如果数据库时间比上次发布时间新，则需要更新
-            if [ "$db_timestamp" -gt "$last_release_time" ]; then
-              echo "$db has newer version (DB: $db_timestamp > Release: $last_release_time)"
+            buffer_time=60
+            if [ "$db_timestamp" -gt $((last_release_time + buffer_time)) ]; then
+              echo "$db has newer version (DB: $db_timestamp > Release: $last_release_time + buffer)"
               need_update=true
             else
               echo "$db is up to date (DB: $db_timestamp <= Release: $last_release_time)"
@@ -131,7 +162,13 @@ jobs:
         echo "Latest DB timestamp: $latest_db_time"
         echo "Last release timestamp: $last_release_time"
         
-        # 输出结果
+        if [ "$latest_db_time" -gt 0 ]; then
+          echo "Latest DB time (human): $(date -d @$latest_db_time)"
+        fi
+        if [ "$last_release_time" -gt 0 ]; then
+          echo "Last release time (human): $(date -d @$last_release_time)"
+        fi
+        
         echo "need_update=$need_update" >> $GITHUB_OUTPUT
         echo "current_date=$(date +"%Y.%m.%d")" >> $GITHUB_OUTPUT
         echo "latest_timestamp=$latest_db_time" >> $GITHUB_OUTPUT
@@ -158,7 +195,6 @@ jobs:
           fi
         done
         
-        # 准备上传目录
         mkdir -p upload
         if ls GeoLite*/*.mmdb 1> /dev/null 2>&1; then
           cp -v GeoLite*/*.mmdb upload/
