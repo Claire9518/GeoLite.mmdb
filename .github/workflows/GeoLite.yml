@@ -56,6 +56,7 @@ jobs:
         databases=("GeoLite2-ASN" "GeoLite2-City" "GeoLite2-Country")
         need_update=false
         latest_db_time=0
+        updated_databases=()
         
         rfc_to_timestamp() {
           local rfc_time="$1"
@@ -116,10 +117,11 @@ jobs:
             
             buffer_time=60
             if [ "$db_timestamp" -gt $((last_release_time + buffer_time)) ]; then
-              echo "$db has newer version (DB: $db_timestamp > Release: $last_release_time + buffer)"
+              echo "✅ $db has newer version (DB: $db_timestamp > Release: $last_release_time + buffer)"
               need_update=true
+              updated_databases+=("$db")
             else
-              echo "$db is up to date (DB: $db_timestamp <= Release: $last_release_time)"
+              echo "⏭️  $db is up to date (DB: $db_timestamp <= Release: $last_release_time)"
             fi
           else
             echo "Could not parse last-modified time for $db"
@@ -127,8 +129,11 @@ jobs:
           
           echo "---"
         done
+
+        updated_db_string=$(IFS=','; echo "${updated_databases[*]}")
         
         echo "Final decision: need_update=$need_update"
+        echo "Updated databases: $updated_db_string"
         echo "Latest DB timestamp: $latest_db_time"
         echo "Last release timestamp: $last_release_time"
         
@@ -142,34 +147,57 @@ jobs:
         echo "need_update=$need_update" >> $GITHUB_OUTPUT
         echo "current_date=$(date +"%Y.%m.%d")" >> $GITHUB_OUTPUT
         echo "latest_timestamp=$latest_db_time" >> $GITHUB_OUTPUT
+        echo "updated_databases=$updated_db_string" >> $GITHUB_OUTPUT
 
     - name: Download GeoLite databases
       if: steps.check_updates.outputs.need_update == 'true'
       run: |
         echo "Updates detected, downloading databases..."
         echo "Latest database timestamp: ${{ steps.check_updates.outputs.latest_timestamp }}"
+        echo "Updated databases: ${{ steps.check_updates.outputs.updated_databases }}"
 
-        curl -O -J -L -u "${{ secrets.MAXMIND_ACCOUNT_ID }}:${{ secrets.MAXMIND_LICENSE_KEY }}" \
-          'https://download.maxmind.com/geoip/databases/GeoLite2-ASN/download?suffix=tar.gz'
-        curl -O -J -L -u "${{ secrets.MAXMIND_ACCOUNT_ID }}:${{ secrets.MAXMIND_LICENSE_KEY }}" \
-          'https://download.maxmind.com/geoip/databases/GeoLite2-City/download?suffix=tar.gz'
-        curl -O -J -L -u "${{ secrets.MAXMIND_ACCOUNT_ID }}:${{ secrets.MAXMIND_LICENSE_KEY }}" \
-          'https://download.maxmind.com/geoip/databases/GeoLite2-Country/download?suffix=tar.gz'
+        IFS=',' read -ra updated_dbs <<< "${{ steps.check_updates.outputs.updated_databases }}"
+        
+        for db in "${updated_dbs[@]}"; do
+          if [ -n "$db" ]; then
+            echo "📥 Downloading $db..."
+            curl -O -J -L -u "${{ secrets.MAXMIND_ACCOUNT_ID }}:${{ secrets.MAXMIND_LICENSE_KEY }}" \
+              "https://download.maxmind.com/geoip/databases/${db}/download?suffix=tar.gz"
+          fi
+        done
         
         for file in *.tar.gz; do
           if [ -f "$file" ]; then
-            echo "Extracting $file"
+            echo "📦 Extracting $file"
             tar zxvf "$file"
           fi
         done
         
         mkdir -p upload
+        
+        echo "📂 Checking for existing database files..."
+        
+        git fetch origin download:download 2>/dev/null || echo "No download branch found"
+        if git show-ref --verify --quiet refs/heads/download; then
+          git checkout download -- . 2>/dev/null || true
+          if ls *.mmdb 1> /dev/null 2>&1; then
+            echo "📋 Found existing database files:"
+            ls -la *.mmdb
+            cp *.mmdb upload/ 2>/dev/null || true
+          fi
+          git checkout main 2>/dev/null || git checkout master 2>/dev/null || true
+        fi
+        
         if ls GeoLite*/*.mmdb 1> /dev/null 2>&1; then
+          echo "📝 Updating database files:"
           cp -v GeoLite*/*.mmdb upload/
-          echo "Files prepared for upload:"
+        fi
+        
+        if ls upload/*.mmdb 1> /dev/null 2>&1; then
+          echo "📄 Final files for upload:"
           ls -la upload/
         else
-          echo "No .mmdb files found!"
+          echo "❌ No .mmdb files found!"
           exit 1
         fi
 
@@ -182,7 +210,7 @@ jobs:
         git config user.email "${{ github.actor }}@users.noreply.github.com"
         git checkout -b download
         git add .
-        git commit -m "Update GeoLite databases - ${{ steps.check_updates.outputs.current_date }}"
+        git commit -m "Update GeoLite databases - ${{ steps.check_updates.outputs.current_date }} (Updated: ${{ steps.check_updates.outputs.updated_databases }})"
         git remote add origin "https://${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
         git push -f origin download
 
@@ -200,11 +228,14 @@ jobs:
           Updated on: ${{ steps.check_updates.outputs.current_date }}
           Database timestamp: ${{ steps.check_updates.outputs.latest_timestamp }}
           
-          This release contains the latest GeoLite2 databases:
+          🔄 **Updated databases**: ${{ steps.check_updates.outputs.updated_databases }}
+          
+          📦 **This release contains**:
           - GeoLite2-ASN.mmdb
           - GeoLite2-City.mmdb  
           - GeoLite2-Country.mmdb
           
+          Only the databases with newer versions were downloaded and updated.
           Databases are automatically updated when MaxMind releases new versions.
         files: upload/*.mmdb
 
@@ -212,20 +243,19 @@ jobs:
       if: steps.check_updates.outputs.need_update == 'true'
       uses: dev-drprasad/delete-older-releases@master
       with:
-        keep_latest: 3
+        keep_latest: 5
         delete_tags: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Delete workflow runs
-      if: steps.check_updates.outputs.need_update == 'true'
       uses: Mattraks/delete-workflow-runs@main
       with:
-        retain_days: 1
+        retain_days: 7
         keep_minimum_runs: 5
 
     - name: No updates needed
       if: steps.check_updates.outputs.need_update != 'true'
       run: |
-        echo "✅ No updates needed. Databases are up to date."
+        echo "✅ No updates needed. All databases are up to date."
         echo "All database timestamps are older than or equal to the last release."
