@@ -222,7 +222,7 @@ jobs:
       uses: Mattraks/delete-workflow-runs@main
       with:
         retain_days: 1
-        keep_minimum_runs: 3
+        keep_minimum_runs: 5
 
     - name: No updates needed
       if: steps.check_updates.outputs.need_update != 'true'
