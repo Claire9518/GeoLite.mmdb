@@ -90,7 +90,6 @@ jobs:
           echo "No previous release found or API call failed"
         fi
 
-        echo "Last release timestamp: $last_release_time"
         echo "Checking for database updates..."
 
         if [ "$last_release_time" -eq 0 ]; then
