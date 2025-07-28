@@ -230,7 +230,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         tag_name: ${{ steps.check_updates.outputs.current_date }}
-        name: "GeoLite2 Databases - ${{ steps.check_updates.outputs.current_date }}"
+        name: "${{ steps.check_updates.outputs.current_date }}"
         body: |
           📍 **GeoLite2 Database Update**
           
