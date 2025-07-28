@@ -38,6 +38,7 @@ on:
 permissions:
   contents: write
   actions: write
+  checks: write
 
 jobs:
   check-and-update:
@@ -117,12 +118,12 @@ jobs:
             
             buffer_time=60
             if [ "$db_timestamp" -gt $((last_release_time + buffer_time)) ]; then
-              echo "✅ $db has newer version (DB: $db_timestamp > Release: $last_release_time + buffer)"
-              need_update=true
-              updated_databases+=("$db")
-            else
-              echo "⏭️  $db is up to date (DB: $db_timestamp <= Release: $last_release_time)"
-            fi
+            echo "✅ $db has newer version (DB: $db_timestamp > Release: $last_release_time + buffer)"
+            need_update=true
+            updated_databases+=("$db")
+          else
+            echo "⏭️  $db is up to date (DB: $db_timestamp <= Release: $last_release_time)"
+          fi
           else
             echo "Could not parse last-modified time for $db"
           fi
@@ -251,7 +252,7 @@ jobs:
     - name: Delete workflow runs
       uses: Mattraks/delete-workflow-runs@main
       with:
-        retain_days: 7
+        retain_days: 0
         keep_minimum_runs: 5
 
     - name: No updates needed
