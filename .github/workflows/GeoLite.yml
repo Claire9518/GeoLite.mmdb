@@ -65,22 +65,27 @@ jobs:
         }
         
         last_release_time=0
-        if git tag -l --sort=-version:refname | head -1 > /dev/null 2>&1; then
-          last_tag=$(git tag -l --sort=-version:refname | head -1)
-          echo "Last release tag: $last_tag"
+        echo "Getting last release info..."
+
+        release_info=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+          "https://api.github.com/repos/${{ github.repository }}/releases/latest")
+
+        if [ $? -eq 0 ] && echo "$release_info" | grep -q '"created_at"'; then
+          release_created_at=$(echo "$release_info" | grep '"created_at"' | cut -d'"' -f4)
+          release_tag=$(echo "$release_info" | grep '"tag_name"' | cut -d'"' -f4)
           
-          tag_date=$(git log -1 --format=%ai "$last_tag" 2>/dev/null)
-          if [ -n "$tag_date" ]; then
-            last_release_time=$(date -d "$tag_date" +%s 2>/dev/null || echo "0")
-            echo "Tag date: $tag_date"
-            echo "Tag timestamp: $last_release_time"
-          else
-            echo "Could not get tag date"
+          echo "Last release tag: $release_tag"
+          echo "Release created at: $release_created_at"
+          
+          if [ -n "$release_created_at" ]; then
+            last_release_time=$(date -d "$release_created_at" +%s 2>/dev/null || echo "0")
+            echo "Release timestamp: $last_release_time"
+            echo "Release time (human): $(date -d @$last_release_time 2>/dev/null)"
           fi
         else
-          echo "No previous release found"
+          echo "No previous release found or API call failed"
         fi
-        
+
         echo "Checking for database updates..."
         echo "Last release timestamp: $last_release_time"
         
