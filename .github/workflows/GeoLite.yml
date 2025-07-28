@@ -71,16 +71,26 @@ jobs:
           "https://api.github.com/repos/${{ github.repository }}/releases/latest")
 
         if [ $? -eq 0 ] && echo "$release_info" | grep -q '"created_at"'; then
-          release_created_at=$(echo "$release_info" | grep '"created_at"' | cut -d'"' -f4)
-          release_tag=$(echo "$release_info" | grep '"tag_name"' | cut -d'"' -f4)
+          release_created_at=$(echo "$release_info" | jq -r '.created_at' 2>/dev/null)
+          release_tag=$(echo "$release_info" | jq -r '.tag_name' 2>/dev/null)
+
+          if [ -z "$release_created_at" ] || [ "$release_created_at" = "null" ]; then
+            release_created_at=$(echo "$release_info" | grep -o '"created_at":"[^"]*"' | cut -d'"' -f4)
+            release_tag=$(echo "$release_info" | grep -o '"tag_name":"[^"]*"' | cut -d'"' -f4)
+          fi
           
           echo "Last release tag: $release_tag"
           echo "Release created at: $release_created_at"
           
-          if [ -n "$release_created_at" ]; then
+          if [ -n "$release_created_at" ] && [ "$release_created_at" != "null" ]; then
             last_release_time=$(date -d "$release_created_at" +%s 2>/dev/null || echo "0")
             echo "Release timestamp: $last_release_time"
-            echo "Release time (human): $(date -d @$last_release_time 2>/dev/null)"
+
+            if [ "$last_release_time" -gt 0 ]; then
+              echo "Release time (human): $(date -d @$last_release_time 2>/dev/null)"
+            else
+              echo "Failed to convert release time"
+            fi  
           fi
         else
           echo "No previous release found or API call failed"
@@ -88,7 +98,7 @@ jobs:
 
         echo "Checking for database updates..."
         echo "Last release timestamp: $last_release_time"
-        
+
         if [ "$last_release_time" -eq 0 ]; then
           last_release_time=$(($(date +%s) - 86400))
           echo "Using 24 hours ago as reference: $last_release_time"
