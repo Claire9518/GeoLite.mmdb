@@ -232,17 +232,7 @@ jobs:
         tag_name: ${{ steps.check_updates.outputs.current_date }}
         name: "${{ steps.check_updates.outputs.current_date }}"
         body: |
-          📍 **GeoLite2 Database Update**
-          
-          Updated on: ${{ steps.check_updates.outputs.current_date }}
-          Database timestamp: ${{ steps.check_updates.outputs.latest_timestamp }}
-          
           🔄 **Updated databases**: ${{ steps.check_updates.outputs.updated_databases }}
-          
-          📦 **This release contains**:
-          - GeoLite2-ASN.mmdb
-          - GeoLite2-City.mmdb  
-          - GeoLite2-Country.mmdb
           
           Only the databases with newer versions were downloaded and updated.
           Databases are automatically updated when MaxMind releases new versions.
