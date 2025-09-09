@@ -234,7 +234,6 @@ jobs:
         body: |
           🔄 **Updated databases**: ${{ steps.check_updates.outputs.updated_databases }}
           
-          Only the databases with newer versions were downloaded and updated.
           Databases are automatically updated when MaxMind releases new versions.
         files: upload/*.mmdb
 
